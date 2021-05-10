@@ -1,6 +1,6 @@
 NIMC = nim
 
-NIMFLAGS = -w:on
+NIMFLAGS = -w:on --nimcache:./nimcache
 BINDIR = bin
 SDIR = src
 BINS = chip8

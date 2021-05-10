@@ -267,5 +267,5 @@ proc skipXNotEqY(cpu: var chip8) =
     x = getX(cpu.opcode)
     y = getY(cpu.opcode)
   if cpu.V[x] != cpu.V[y]:
-    pc += 2
-  pc += 2
+    cpu.pc += 2
+  cpu.pc += 2
