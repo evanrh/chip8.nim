@@ -19,9 +19,7 @@ proc main() =
 
   var
     running: bool = true
-    i: int = 0
-  while(running and i < 100):
+  while(running):
     emulator.cycle()
-    i += 1
 
 main()

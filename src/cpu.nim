@@ -1,9 +1,13 @@
-import strutils
+import strutils, random
+import rendering
 
 const
   memSize = 4096
   memStart: uint16 = 0x200
   numRegisters = 16
+  spriteCols = 8
+  screenHeight = 64
+  screenWidth = 32
 
 type
   chip8* = ref object
@@ -13,6 +17,7 @@ type
     index: uint16
     pc: uint16
     stack: seq[uint16]
+    gfx: array[screenHeight * screenWidth, bool]
 
 type opFunction = (proc(cpu: var chip8))
 
@@ -36,6 +41,10 @@ proc rightShift(cpu: var chip8)
 proc leftShift(cpu: var chip8)
 proc subYFromX(cpu: var chip8)
 proc skipXNotEqY(cpu: var chip8)
+proc setIndex(cpu: var chip8)
+proc jmpReg(cpu: var chip8)
+proc randNum(cpu: var chip8)
+proc draw(cpu: var chip8)
 
 proc getX(opcode: uint16): uint8 =
   result = cast[uint8]((opcode and 0x0F00) shr 8)
@@ -127,6 +136,14 @@ proc cycle*(cpu: var chip8) =
           discard
     of 0x9000:
       op = skipXNotEqY
+    of 0xA000:
+      op = setIndex
+    of 0xB000:
+      op = jmpReg
+    of 0xC000:
+      op = randNum
+    of 0xD000:
+      op = draw
     else:
       cpu.pc += 2
       #stderr.write("Not a valid opcode: " & toHex(cpu.opcode) & "\n")
@@ -233,6 +250,13 @@ proc addRegReg(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
     y = getY(cpu.opcode)
+    res = cpu.V[x] + cpu.V[y]
+
+  # Check for carry flag
+  if res < cpu.V[x] or res < cpu.V[y]:
+    cpu.V[0xF] = 1
+  else:
+    cpu.V[0xF] = 0
   cpu.V[x] += cpu.V[y]
   cpu.pc += 2
 
@@ -268,4 +292,41 @@ proc skipXNotEqY(cpu: var chip8) =
     y = getY(cpu.opcode)
   if cpu.V[x] != cpu.V[y]:
     cpu.pc += 2
+  cpu.pc += 2
+
+proc setIndex(cpu: var chip8) =
+  cpu.index = cpu.opcode and 0x0FFF
+  cpu.pc += 2
+
+proc jmpReg(cpu: var chip8) =
+  cpu.pc = cpu.V[0] + (cpu.opcode and 0x0FFF)
+
+proc randNum(cpu: var chip8) =
+  let
+    x = getX(cpu.opcode)
+    num = cpu.opcode and 0x00FF
+  cpu.V[x] = cast[uint16](rand(255)) and num
+  cpu.pc += 2
+
+proc draw(cpu: var chip8) =
+  let
+    x = getX(cpu.opcode)
+    y = getY(cpu.opcode)
+    n = cpu.opcode and 0x000F
+    xVal = cpu.V[x]
+    yVal = cpu.V[y]
+
+  # Draw sprite from memory
+  for row in countup[uint16](0, n):
+
+    let px = cpu.memory[cpu.index + row]
+    for col in countup[uint16](0, spriteCols - 1):
+      let val = px and cast[uint8](0x80 shr col)
+      if val != 0:
+        # Collision detection check
+        if cpu.gfx[xVal + row + (yVal + col) * screenHeight]:
+          cpu.V[0xF] = 1
+        # XOR pixel value
+        cpu.gfx[xVal + row + (yVal + col) * screenHeight] = not cpu.gfx[xVal + row + (yVal + col) * screenHeight]
+
   cpu.pc += 2
