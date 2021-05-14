@@ -1,5 +1,6 @@
 import strutils, random
-import rendering
+import sdl2
+import rendering, keyboard
 
 const
   memSize = 4096
@@ -8,6 +9,10 @@ const
   spriteCols = 8
   screenHeight = 64
   screenWidth = 32
+  timerRate: uint32 = 60
+  delayTime: uint32 = 1000'u32 div timerRate
+
+var next_time: uint32 = 0
 
 type
   chip8* = ref object
@@ -18,6 +23,8 @@ type
     pc: uint16
     stack: seq[uint16]
     gfx: array[screenHeight * screenWidth, bool]
+    soundTimer: uint32
+    delayTimer: uint32
 
 type opFunction = (proc(cpu: var chip8))
 
@@ -45,12 +52,36 @@ proc setIndex(cpu: var chip8)
 proc jmpReg(cpu: var chip8)
 proc randNum(cpu: var chip8)
 proc draw(cpu: var chip8)
+proc skipKeyEq(cpu: var chip8)
+proc skipKeyNotEq(cpu: var chip8)
+proc getDelay(cpu: var chip8)
+proc getKey(cpu: var chip8)
 
+# Get first number from opcode that sends one or two numbers
 proc getX(opcode: uint16): uint8 =
   result = cast[uint8]((opcode and 0x0F00) shr 8)
 
+# Get second number from opcode that sends two numbers
 proc getY(opcode: uint16): uint8 =
   result = cast[uint8]((opcode and 0x00F0) shr 4)
+
+# Get remaining frame time to delay
+proc time_left(): uint32 =
+  let now: uint32 = getTicks()
+  if(next_time <= now):
+    return 0
+  else:
+    return next_time - now
+
+# Update cpu timers
+proc updateTimers(cpu: var chip8) =
+  # Check to keep timers from underflowing
+  if (cpu.delayTimer - 1) < cpu.delayTimer:
+    cpu.delayTimer = (cpu.delayTimer - 1)
+  if (cpu.soundTimer - 1) < cpu.soundTimer:
+    cpu.soundTimer = (cpu.soundTimer - 1)
+  delay(time_left())
+  next_time += delayTime
 
 proc initialize*(cpu: var chip8) =
   cpu.opcode = 0
@@ -59,6 +90,9 @@ proc initialize*(cpu: var chip8) =
   cpu.index = 0
   cpu.pc = memStart
   cpu.stack = @[]
+  cpu.delayTimer = cast[uint8](timerRate)
+  cpu.soundTimer = 0
+  next_time = getTicks() + delayTime
 
 # Load the ROM file at filename into the emulator's memory
 proc loadRom*(cpu: var chip8, filename: string): bool =
@@ -144,12 +178,30 @@ proc cycle*(cpu: var chip8) =
       op = randNum
     of 0xD000:
       op = draw
+    of 0xE000:
+      case cpu.opcode and 0x00FF:
+        of 0x009E:
+          op = skipKeyEq
+        of 0x00A1:
+          op = skipKeyNotEq
+        else:
+          discard
+    of 0xF000:
+      case cpu.opcode and 0x00FF:
+        of 0x0007:
+          op = getDelay
+        of 0x000A:
+          op = getKey
     else:
       cpu.pc += 2
       #stderr.write("Not a valid opcode: " & toHex(cpu.opcode) & "\n")
 
   if not op.isNil:
     op(cpu)
+  # Decrement timers at rate specified above
+  cpu.updateTimers()
+  if cpu.soundTimer > 0'u32:
+    echo "BEEP!"
 
 # Clear the graphics screen
 proc clearScreen(cpu: var chip8) =
@@ -328,5 +380,33 @@ proc draw(cpu: var chip8) =
           cpu.V[0xF] = 1
         # XOR pixel value
         cpu.gfx[xVal + row + (yVal + col) * screenHeight] = not cpu.gfx[xVal + row + (yVal + col) * screenHeight]
+
+  cpu.pc += 2
+
+proc skipKeyEq(cpu: var chip8) =
+  let
+    x = getX(cpu.opcode)
+    state = checkState(cpu.V[x])
+
+  if state:
+    cpu.pc += 2
+  cpu.pc += 2
+
+proc skipKeyNotEq(cpu: var chip8) =
+  let
+    x = getX(cpu.opcode)
+    state = checkState(cpu.V[x])
+
+  if not state:
+    cpu.pc += 2
+  cpu.pc += 2
+
+proc getDelay(cpu: var chip8) =
+  let x = getX(cpu.opcode)
+  cpu.V[x] = cpu.delayTimer
+  cpu.pc += 2
+
+proc getKey(cpu: var chip8) =
+  let x = getX(cpu.opcode)
 
   cpu.pc += 2

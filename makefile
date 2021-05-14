@@ -6,7 +6,7 @@ SDIR = src
 BINS = chip8
 
 MAIN = $(SDIR)/main.nim
-_SRCS := cpu.nim main.nim rendering.nim
+_SRCS := cpu.nim main.nim rendering.nim keyboard.nim
 SRCS := $(patsubst %, $(SDIR)/%, $(_SRCS))
 
 all: $(BINDIR)/$(BINS)
