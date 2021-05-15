@@ -27,10 +27,14 @@ proc checkState*(key: uint): bool =
   let val: cint = getKeyFromScancode(keys[key])
   return state[val] == 1
 
-proc getKeyState(): cint =
-  var event: Event
+proc getKeyState*(): uint8 =
+  var
+    event: Event
+    valid: bool = false
 
-  while (addr event).isNil or event.kind != KeyDown:
+  while (addr event).isNil or event.kind != KeyDown or not valid:
     discard waitEvent(event)
-
-  return event.keysym.scancode
+    for k, v in keys.pairs:
+      if event.key.keysym.scancode == v:
+        echo k
+        return uint8(k)

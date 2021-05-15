@@ -7,24 +7,42 @@ const
   memStart: uint16 = 0x200
   numRegisters = 16
   spriteCols = 8
-  screenHeight = 64
-  screenWidth = 32
+  screenHeight = 32
+  screenWidth = 64
   timerRate: uint32 = 60
   delayTime: uint32 = 1000'u32 div timerRate
 
 var next_time: uint32 = 0
+let fonts: array[0..79, uint8] =
+  [0xF0'u8, 0x90, 0x90, 0x90, 0xF0, # 0
+  0x20, 0x60, 0x20, 0x20, 0x70, # 1
+  0xF0, 0x10, 0xF0, 0x80, 0xF0, # 2
+  0xF0, 0x10, 0xF0, 0x10, 0xF0, # 3
+  0x90, 0x90, 0xF0, 0x10, 0x10, # 4
+  0xF0, 0x80, 0xF0, 0x10, 0xF0, # 5
+  0xF0, 0x80, 0xF0, 0x90, 0xF0, # 6
+  0xF0, 0x10, 0x20, 0x40, 0x40, # 7
+  0xF0, 0x90, 0xF0, 0x90, 0xF0, # 8
+  0xF0, 0x90, 0xF0, 0x10, 0xF0, # 9
+  0xF0, 0x90, 0xF0, 0x90, 0x90, # A
+  0xE0, 0x90, 0xE0, 0x90, 0xE0, # B
+  0xF0, 0x80, 0x80, 0x80, 0xF0, # C
+  0xE0, 0x90, 0x90, 0x90, 0xE0, # D
+  0xF0, 0x80, 0xF0, 0x80, 0xF0, # E
+  0xF0, 0x80, 0xF0, 0x80, 0x80] # F
 
 type
   chip8* = ref object
     opcode: uint16
     memory: array[memSize, uint8]
-    V: array[numRegisters, uint16]
+    V: array[numRegisters, uint8]
     index: uint16
     pc: uint16
     stack: seq[uint16]
-    gfx: array[screenHeight * screenWidth, bool]
+    gfx: array[screenWidth, array[screenWidth, bool]]
     soundTimer: uint32
     delayTimer: uint32
+    screen: ScreenRender
 
 type opFunction = (proc(cpu: var chip8))
 
@@ -56,14 +74,21 @@ proc skipKeyEq(cpu: var chip8)
 proc skipKeyNotEq(cpu: var chip8)
 proc getDelay(cpu: var chip8)
 proc getKey(cpu: var chip8)
+proc setDelay(cpu: var chip8)
+proc setSound(cpu: var chip8)
+proc addToIndex(cpu: var chip8)
+proc setIndexFont(cpu: var chip8)
+proc storeBCD(cpu: var chip8)
+proc regDump(cpu: var chip8)
+proc regLoad(cpu: var chip8)
 
 # Get first number from opcode that sends one or two numbers
 proc getX(opcode: uint16): uint8 =
-  result = cast[uint8]((opcode and 0x0F00) shr 8)
+  result = uint8((opcode and 0x0F00) shr 8)
 
 # Get second number from opcode that sends two numbers
 proc getY(opcode: uint16): uint8 =
-  result = cast[uint8]((opcode and 0x00F0) shr 4)
+  result = uint8((opcode and 0x00F0) shr 4)
 
 # Get remaining frame time to delay
 proc time_left(): uint32 =
@@ -83,6 +108,11 @@ proc updateTimers(cpu: var chip8) =
   delay(time_left())
   next_time += delayTime
 
+# Set up fonts in memory
+proc setupFonts(cpu: var chip8) =
+  for i, px in fonts:
+    cpu.memory[i] = px
+
 proc initialize*(cpu: var chip8) =
   cpu.opcode = 0
   #fill(cpu.memory, 0)
@@ -90,9 +120,13 @@ proc initialize*(cpu: var chip8) =
   cpu.index = 0
   cpu.pc = memStart
   cpu.stack = @[]
-  cpu.delayTimer = cast[uint8](timerRate)
+  cpu.delayTimer = uint8(timerRate)
   cpu.soundTimer = 0
   next_time = getTicks() + delayTime
+  cpu.setupFonts
+  new(cpu.screen)
+  if not cpu.screen.init(screenWidth, screenHeight, 10.0):
+    quit(QuitFailure)
 
 # Load the ROM file at filename into the emulator's memory
 proc loadRom*(cpu: var chip8, filename: string): bool =
@@ -192,6 +226,22 @@ proc cycle*(cpu: var chip8) =
           op = getDelay
         of 0x000A:
           op = getKey
+        of 0x0015:
+          op = setDelay
+        of 0x0018:
+          op = setSound
+        of 0x001E:
+          op = addToIndex
+        of 0x0029:
+          op = setIndexFont
+        of 0x0033:
+          op = storeBCD
+        of 0x0055:
+          op = regDump
+        of 0x0065:
+          op = regLoad
+        else:
+          discard
     else:
       cpu.pc += 2
       #stderr.write("Not a valid opcode: " & toHex(cpu.opcode) & "\n")
@@ -203,10 +253,18 @@ proc cycle*(cpu: var chip8) =
   if cpu.soundTimer > 0'u32:
     echo "BEEP!"
 
+  cpu.screen.clear
+  for i, row in cpu.gfx:
+    for j, pixel in row:
+      cpu.screen.render(pixel, i, j)
+  cpu.screen.show
+
 # Clear the graphics screen
 proc clearScreen(cpu: var chip8) =
-  # Clear graphics
-  discard 1 + 1
+  for i, row in cpu.gfx:
+    for j, col in row:
+      cpu.gfx[i][j] = false
+  cpu.screen.clear
   cpu.pc += 2
 
 # Return from a subroutine, i.e pop an address of the stack into pc
@@ -228,7 +286,7 @@ proc runSub(cpu: var chip8) =
 proc skipEq(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
-    value = cpu.opcode and 0x00FF
+    value: uint8 = uint8(cpu.opcode and 0x00FF)
   
   # Skip next instruction if equal
   if cpu.V[x] == value:
@@ -240,7 +298,7 @@ proc skipEq(cpu: var chip8) =
 proc skipNotEq(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
-    value = cpu.opcode and 0x00FF
+    value: uint8 = uint8(cpu.opcode and 0x00FF)
 
   # Skip next instruction if not equal
   if cpu.V[x] != value:
@@ -262,12 +320,12 @@ proc skipXEqY(cpu: var chip8) =
 
 proc setReg(cpu: var chip8) =
   let x = getX(cpu.opcode)
-  cpu.V[x] = cpu.opcode and 0x00FF
+  cpu.V[x] = uint8(cpu.opcode and 0x00FF)
   cpu.pc += 2
 
 proc addReg(cpu: var chip8) =
   let x = getX(cpu.opcode)
-  cpu.V[x] += cpu.opcode and 0x00FF
+  cpu.V[x] += uint8(cpu.opcode and 0x00FF)
   cpu.pc += 2
 
 proc setXEqY(cpu: var chip8) =
@@ -316,12 +374,17 @@ proc subRegReg(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
     y = getY(cpu.opcode)
+  # Borrow check flag
+  if cpu.V[y] > cpu.V[x]:
+    cpu.V[0xF] = 0
+  else:
+    cpu.V[0xF] = 1
   cpu.V[x] -= cpu.V[y]
   cpu.pc += 2
 
 proc rightShift(cpu: var chip8) =
   let x = getX(cpu.opcode)
-  cpu.V[0xF] = (cpu.V[x] and 0x8000) shr 15
+  cpu.V[0xF] = (cpu.V[x] and 0x80) shr 7
   cpu.V[x] = cpu.V[x] shr 1
   cpu.pc += 2
 
@@ -335,6 +398,11 @@ proc subYFromX(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
     y = getY(cpu.opcode)
+  # Borrow check flag
+  if cpu.V[x] > cpu.V[y]:
+    cpu.V[0xF] = 0
+  else:
+    cpu.V[0xF] = 1
   cpu.V[x] = cpu.V[y] - cpu.V[x]
   cpu.pc += 2
 
@@ -351,35 +419,38 @@ proc setIndex(cpu: var chip8) =
   cpu.pc += 2
 
 proc jmpReg(cpu: var chip8) =
-  cpu.pc = cpu.V[0] + (cpu.opcode and 0x0FFF)
+  cpu.pc = uint16(cpu.V[0]) + (cpu.opcode and 0x0FFF)
 
 proc randNum(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
     num = cpu.opcode and 0x00FF
-  cpu.V[x] = cast[uint16](rand(255)) and num
+  cpu.V[x] = uint8(rand(255)) and uint8 num
   cpu.pc += 2
 
 proc draw(cpu: var chip8) =
   let
     x = getX(cpu.opcode)
     y = getY(cpu.opcode)
-    n = cpu.opcode and 0x000F
+    n: uint8 = uint8(cpu.opcode and 0x000F)
     xVal = cpu.V[x]
     yVal = cpu.V[y]
 
   # Draw sprite from memory
-  for row in countup[uint16](0, n):
+  for row in countup[uint8](0, n):
 
     let px = cpu.memory[cpu.index + row]
-    for col in countup[uint16](0, spriteCols - 1):
+    for col in countup[uint8](0, spriteCols - 1):
       let val = px and cast[uint8](0x80 shr col)
       if val != 0:
         # Collision detection check
-        if cpu.gfx[xVal + row + (yVal + col) * screenHeight]:
-          cpu.V[0xF] = 1
-        # XOR pixel value
-        cpu.gfx[xVal + row + (yVal + col) * screenHeight] = not cpu.gfx[xVal + row + (yVal + col) * screenHeight]
+        try:
+          if cpu.gfx[xVal + row][yVal + col]:
+            cpu.V[0xF] = 1
+          # XOR pixel value
+          cpu.gfx[xVal + row][yVal + col] = cpu.gfx[xVal + row][yVal + col] xor true
+        except IndexError:
+          continue
 
   cpu.pc += 2
 
@@ -403,10 +474,54 @@ proc skipKeyNotEq(cpu: var chip8) =
 
 proc getDelay(cpu: var chip8) =
   let x = getX(cpu.opcode)
-  cpu.V[x] = cpu.delayTimer
+  cpu.V[x] = uint8 cpu.delayTimer
   cpu.pc += 2
 
 proc getKey(cpu: var chip8) =
   let x = getX(cpu.opcode)
+  cpu.V[x] = getKeyState()
+  cpu.pc += 2
 
+proc setDelay(cpu: var chip8) =
+  let x = getX(cpu.opcode)
+  cpu.delayTimer = cpu.V[x]
+  cpu.pc += 2
+
+proc setSound(cpu: var chip8) =
+  let x = getX(cpu.opcode)
+  cpu.soundTimer = cpu.V[x]
+  cpu.pc += 2
+
+proc addToIndex(cpu: var chip8) =
+  let x = getX(cpu.opcode)
+  cpu.index += cpu.V[x]
+
+proc setIndexFont(cpu: var chip8) =
+  let x = getX(cpu.opcode)
+  cpu.index = 5'u8 * cpu.V[x]
+  cpu.pc += 2
+
+proc storeBCD(cpu: var chip8) =
+  let
+    x = getX(cpu.opcode)
+    i = cpu.index
+  cpu.memory[i] = cpu.V[x] div 100;
+  cpu.memory[i + 1] = (cpu.V[x] div 10) mod 10
+  cpu.memory[i + 2] = (cpu.V[x] mod 100) mod 10
+  cpu.pc += 2
+
+proc regDump(cpu: var chip8) =
+  let
+    i = cpu.index
+    x = getX(cpu.opcode)
+  for index in countup[uint8](0, x):
+    cpu.memory[i + index] = cpu.V[index]
+  cpu.pc += 2
+
+proc regLoad(cpu: var chip8) =
+  let
+    i = cpu.index
+    x = getX(cpu.opcode)
+  for index in countup[uint8](0, x):
+    cpu.V[index] = cpu.memory[i + index]
   cpu.pc += 2
